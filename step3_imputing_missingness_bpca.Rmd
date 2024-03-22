@@ -1,0 +1,110 @@
+---
+title: "Impute Missing Data"
+author: "Cheng-Chang"
+output:
+  html_document:
+    df_print: paged
+date: "2023-11-25"
+---
+```{r, echo=FALSE, include=FALSE}
+# clean environment
+rm(list=ls())
+library(readr)
+library(dplyr)
+library(gplots)
+library(ggplot2)
+library(ComplexHeatmap)
+library(magick)
+library(tidyverse)
+library(tableone)
+library(kableExtra)
+library(reshape2)
+library(jsonlite)
+library(tibble)
+library(mice)
+library(parallel)
+library(optimx)
+library(optimParallel)
+library(foreach)
+library(doParallel)
+library(parallelly)
+library(softImpute)
+library(pcaMethods)
+library(cape)
+library(missForest)
+library(mice)
+select <- dplyr::select
+```
+
+```{r, echo=FALSE}
+harmonized <- readRDS("./master_processed_training_data.RDS")
+subject <- harmonized$subject_specimen
+antibody <- harmonized$abtiter_wide$batchCorrected_data
+cytokine <- harmonized$plasma_cytokine_concentrations$batchCorrected_data
+frequency <- harmonized$pbmc_cell_frequency$batchCorrected_data
+gene <- harmonized$pbmc_gene_expression$batchCorrected_data
+
+rname <- c(row.names(antibody), row.names(cytokine), row.names(frequency), row.names(gene))
+library(plyr)
+all.final <- rbind.fill.matrix(antibody, cytokine, frequency, gene) %>% `row.names<-`(rname) %>% as.data.frame()
+detach(package:plyr)
+
+# Colnames
+# keep data only <= 14 days
+
+subject$age <- as.numeric((subject$date_of_boost-subject$year_of_birth)/365.25)
+# table(subject$actual_day_relative_to_boost, subject$visit)
+
+subject <- subject %>% filter(planned_day_relative_to_boost %in% c(0,1,3,7,14))
+d0 <- subject %>% filter(planned_day_relative_to_boost == 0) %>% select(specimen_id) %>% unlist()
+d0 <- intersect(d0, colnames(all.final))
+d1 <- subject %>% filter(planned_day_relative_to_boost == 1) %>% select(specimen_id) %>% unlist()
+d1 <- intersect(d1, colnames(all.final))
+d3 <- subject %>% filter(planned_day_relative_to_boost == 3) %>% select(specimen_id) %>% unlist()
+d3 <- intersect(d3, colnames(all.final))
+d7 <- subject %>% filter(planned_day_relative_to_boost == 7) %>% select(specimen_id) %>% unlist()
+d7 <- intersect(d7, colnames(all.final))
+d14 <- subject %>% filter(planned_day_relative_to_boost == 14) %>% select(specimen_id) %>% unlist()
+d14 <- intersect(d14, colnames(all.final))
+
+df.d0 <- all.final %>% select(all_of(d0))
+df.d1 <- all.final %>% select(all_of(d1))
+df.d3 <- all.final %>% select(all_of(d3))
+df.d7 <- all.final %>% select(all_of(d7))
+df.d14 <- all.final %>% select(all_of(d14))
+
+df.all <- cbind(df.d0, df.d1, df.d3, df.d7, df.d14)
+```
+
+```{r}
+# http://ishiilab.jp/member/oba/tools/BPCAFill.html 
+impute.d <- function(df){
+  x.impute <- df
+  x.impute <- as.matrix(sapply(x.impute, as.numeric))
+  start_time <- Sys.time()
+  pc.bpca <- pca(t(x.impute), method="bpca", nPcs=2) # nPcs could be D-1
+  end_time <- Sys.time()
+  execution_time <- end_time - start_time
+  cat("Total execution time:", as.numeric(execution_time, units = "mins"), "min(s)\n")
+  ## Get the estimated complete observations
+  cObs <- completeObs(pc.bpca)
+  imputed.baseline.id.bpca <- t(cObs) %>% as.data.frame()
+  rownames(imputed.baseline.id.bpca) <- rownames(df)
+  colnames(imputed.baseline.id.bpca) <- colnames(df)
+  return(imputed.baseline.id.bpca)
+}
+
+impute.d0 <- impute.d(df.d0)
+impute.d1 <- impute.d(df.d1)
+impute.d3 <- impute.d(df.d3)
+impute.d7 <- impute.d(df.d7)
+impute.d14 <- impute.d(df.d14)
+
+subject <- harmonized$subject_specimen
+d.all <- c(d0, d1, d3, d7, d14)
+subject_specimen <- subject %>% filter(specimen_id %in% d.all) 
+
+impute.df <- cbind(impute.d0, impute.d1, impute.d3, impute.d7, impute.d14)
+imputed.all <- list(impute.df = impute.df, subject_specimen = subject_specimen)
+# saveRDS(imputed.all, file = "imputed.all.bpca.RDS")
+```
